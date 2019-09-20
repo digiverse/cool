@@ -433,7 +433,10 @@ class signal : public entrails::async_source<std::function<void(int, int)>, int>
   void stop()  { suspend(); }
 
  private:
-  static void signal_handler(void* ctx);
+  static void event_handler(void* ctx);
+#if HAS_QUEUE_WITH_TARGET != 1
+  static void secondary_event_handler(void* ctx);
+#endif
 };
 #endif
 // --------------------------------------------------------------------------
@@ -812,8 +815,11 @@ private:
   }
 
  private:
-  static void timer_handler(void* ctx);
+  static void event_handler(void* ctx);
   static void cancel_handler(void *ctx);
+#if HAS_QUEUE_WITH_TARGET != 1
+  static void secondary_event_handler(void* ctx);
+#endif
   dlldecl void _set_period(uint64_t period, uint64_t leeway);
 
  private:
@@ -935,8 +941,11 @@ class fs_observer : public entrails::async_source<std::function<void(unsigned lo
   void stop()  { suspend(); }
 
  private:
-  static void handler(void* ctx);
+  static void event_handler(void* ctx);
   static void cancel_handler(void* ctx);
+#if HAS_QUEUE_WITH_TARGET != 1
+  static void secondary_event_handler(void* ctx);
+#endif
 };
 #endif
 // --------------------------------------------------------------------------
@@ -1041,8 +1050,11 @@ class data_observer : public entrails::async_source<std::function<void(unsigned 
   dlldecl void send(unsigned long value);
 
  private:
-  static void handler(void* ctx);
   static void cancel_handler(void *ctx);
+  static void event_handler(void* ctx);
+#if HAS_QUEUE_WITH_TARGET != 1
+  static void secondary_event_handler(void* ctx);
+#endif
 };
 
 // --------------------------------------------------------------------------
@@ -1136,8 +1148,11 @@ class proc_observer : public entrails::async_source<std::function<void(unsigned 
   void stop()  { suspend(); }
 
  private:
-  static void handler(void* ctx);
   static void cancel_handler(void *ctx);
+  static void event_handler(void* ctx);
+#if HAS_QUEUE_WITH_TARGET != 1
+  static void secondary_event_handler(void* ctx);
+#endif
 };
 #endif
 

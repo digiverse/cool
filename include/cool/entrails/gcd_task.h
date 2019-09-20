@@ -34,12 +34,21 @@
 namespace cool { namespace gcd { namespace task {
 
 #if defined(LINUX_TARGET)
-#define DISPATCH_QUEUE_PRIORITY_HIGH        2
-#define DISPATCH_QUEUE_PRIORITY_DEFAULT     0
-#define DISPATCH_QUEUE_PRIORITY_LOW         (-2)
-#define DISPATCH_QUEUE_PRIORITY_BACKGROUND  INT16_MIN
 
+#if !defined(DISPATCH_QUEUE_PRIORITY_HIGH)
 typedef long dispatch_queue_priority_t;
+#  define DISPATCH_QUEUE_PRIORITY_HIGH        2
+#endif
+#if !defined(DISPATCH_QUEUE_PRIORITY_DEFAULT)
+#  define DISPATCH_QUEUE_PRIORITY_DEFAULT     0
+#endif
+#if !defined(DISPATCH_QUEUE_PRIORITY_LOW)
+#  define DISPATCH_QUEUE_PRIORITY_LOW         (-2)
+#endif
+#if !defined(DISPATCH_QUEUE_PRIORITY_BACKGROUND)
+#  define DISPATCH_QUEUE_PRIORITY_BACKGROUND  INT16_MIN
+#endif
+
 #endif
 
 #if defined(WIN32_TARGET)
@@ -543,6 +552,65 @@ on_exception(const std::weak_ptr<runner>& runner_, std::function<Result(Exceptio
 }
 
 
+
+class queue
+{
+  struct queue_context{
+    queue_context()
+      : m_context(nullptr), m_executor(nullptr), m_deletor(nullptr)
+    { /* noop */ }
+    queue_context(void *ctx_, void (*exec_)(void *), void (*del_)(void*))
+      : m_context(ctx_), m_executor(exec_), m_deletor(del_)
+    { /* noop */ }
+    void clear()
+    {
+      if (m_deletor && m_context)
+        (*m_deletor)(m_context);
+    }
+    
+    void *m_context;
+    void (*m_executor)(void*);
+    void (*m_deletor)(void *);
+  };
+
+ public:
+  queue(dispatch_queue_t q);
+  queue(const std::string& name = "si.digiverse.gcd");
+  ~queue();
+  void enqueue(entrails::taskinfo* task);
+  void enqueue(void* task);
+#if HAS_QUEUE_WITH_TARGET != 1
+  void enqueue(void(*task)(void *), void* context);
+#endif
+  void start();
+  void stop();
+
+  bool is_suspended() const { return !m_enabled; }
+  bool is_system() const { return m_is_system; }
+
+#if HAS_QUEUE_WITH_TARGET == 1
+  dispatch_queue_t& get_dispatch_queue() { return m_queue; }
+#endif
+
+ private:
+  static dispatch_queue_t& get_global();
+#if HAS_QUEUE_WITH_TARGET != 1
+  static void run_next(void *self_);
+  void submit_next();
+#endif
+
+ private:
+  const                           bool m_is_system;
+  std::atomic<bool>               m_enabled;
+  dispatch_queue_t                m_queue;
+#if HAS_QUEUE_WITH_TARGET != 1
+  std::atomic<bool>               m_running;
+  std::mutex                      m_mutex;
+  std::deque<queue_context>       m_fifo;
+#endif
+};
+
+#if 0
 struct queue
 {
   queue(dispatch_queue_t q, bool is_sys = false)
@@ -561,6 +629,7 @@ struct queue
   const bool m_is_system;
 
 };
+#endif
 
 } // namespace
 

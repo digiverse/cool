@@ -31,31 +31,165 @@
 #include "cool/gcd_async.h"
 
 namespace cool { namespace gcd { namespace task {
+
 namespace entrails
 {
 
-taskinfo* start(taskinfo* p)
+// ---- --------------------------------------------------------------------
+// ----
+// ---- Task queue
+// ----
+// ---- ---------------------------------------------------------------------
+namespace {
+
+#if HAS_QUEUE_WITH_TARGET != 1
+void delete_taskinfo(void *ti)
 {
-  for ( ; p->m_prev != nullptr; p = p->m_prev)
-  ;
-  return p;
+  delete static_cast<entrails::taskinfo*>(ti);
+}
+#endif
+}  // anonymous namespace
+
+dispatch_queue_t& queue::get_global()
+{
+  static dispatch_queue_t global_ = ::dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+
+  return global_;
 }
 
-taskinfo::taskinfo(const std::weak_ptr<runner>& r)
-  : m_runner(r)
-  , m_next(nullptr)
-  , m_prev(nullptr)
-  , m_is_on_exception(false)
+queue::queue(dispatch_queue_t q)
+  : m_is_system(true)
+  , m_enabled(true)
+  , m_queue(q)
 { /* noop */ }
 
-taskinfo::taskinfo(entrails::task_t* t, const std::weak_ptr<runner>& r)
-  : m_runner(r)
-  , m_next(nullptr)
-  , m_prev(nullptr)
-  , m_is_on_exception(false)
+queue::queue(const std::string& name)
+  : m_is_system(false)
+  , m_enabled(true)
 {
-  m_callable.task(t);
+#if HAS_QUEUE_WITH_TARGET == 1
+  m_queue = dispatch_queue_create_with_target(name.c_str(), NULL, get_global());
+#else
+  m_running = false;
+#endif
 }
+
+queue::~queue()
+{
+#if HAS_QUEUE_WITH_TARGET != 1
+  for (auto&& item : m_fifo)
+    item.clear();
+#endif
+}
+
+void queue::enqueue(entrails::taskinfo* task)
+{
+  if (is_suspended())
+    return;
+#if HAS_QUEUE_WITH_TARGET == 1
+  ::dispatch_async_f(m_queue, task, entrails::task_executor);
+#else
+  {
+    std::unique_lock<std::mutex> l(m_mutex);
+    m_fifo.push_back(queue_context(task, entrails::task_executor, delete_taskinfo));
+  }
+  {
+    bool expect = false;
+    if (m_running.compare_exchange_strong(expect, true))
+      submit_next();
+  }
+#endif
+}
+
+void queue::enqueue(void* task)
+{
+  if (is_suspended())
+    return;
+#if HAS_QUEUE_WITH_TARGET == 1
+  ::dispatch_async_f(m_queue, task, entrails::executor);
+#else
+  {
+    std::unique_lock<std::mutex> l(m_mutex);
+    m_fifo.push_back(queue_context(task, entrails::executor, nullptr));
+  }
+  {
+    bool expect = false;
+    if (m_running.compare_exchange_strong(expect, true))
+      submit_next();
+  }
+#endif
+}
+
+#if HAS_QUEUE_WITH_TARGET != 1
+void queue::enqueue(void(*task)(void *), void* context)
+{
+  if (is_suspended())
+    return;
+
+  {
+    std::unique_lock<std::mutex> l(m_mutex);
+    m_fifo.push_back(queue_context(context, task, nullptr));
+  }
+  {
+    bool expect = false;
+    if (m_running.compare_exchange_strong(expect, true))
+      submit_next();
+  }
+}
+#endif
+
+
+void queue::start()
+{
+  if (!is_system())
+  {
+    bool expected = false;
+    if (m_enabled.compare_exchange_strong(expected, true))
+      ::dispatch_resume(m_queue);
+  }
+}
+
+void queue::stop()
+{
+  if (!is_system())
+  {
+    bool expected = true;
+    if (m_enabled.compare_exchange_strong(expected, false))
+      ::dispatch_suspend(m_queue);
+  }
+}
+
+#if HAS_QUEUE_WITH_TARGET != 1
+void queue::submit_next()
+{
+  ::dispatch_async_f(get_global(), this, run_next);
+}
+
+void queue::run_next(void *self_)
+{
+  auto me = static_cast<queue*>(self_);
+  queue_context task;
+  {
+    std::unique_lock<std::mutex> l(me->m_mutex);
+    if (me->m_fifo.empty())
+    {
+      me->m_running = false;
+      return;
+    }
+
+    task = me->m_fifo.front();
+    me->m_fifo.pop_front();
+  }
+  (*task.m_executor)(task.m_context);
+  me->submit_next();
+}
+
+#endif
+// ---- --------------------------------------------------------------------
+// ----
+// ---- Taskinfo
+// ----
+// ---- ---------------------------------------------------------------------
 
 void cleanup_reverse(taskinfo* info_)
 {
@@ -76,16 +210,13 @@ void cleanup(taskinfo* info_)
   }
 }
 
-taskinfo::~taskinfo()
+taskinfo* start(taskinfo* p)
 {
-  if (m_callable)
-  {
-    if (m_deleter)
-      m_deleter();
-    else
-      delete m_callable.task();
-  }
+  for ( ; p->m_prev != nullptr; p = p->m_prev)
+  ;
+  return p;
 }
+
 
 void kickstart(taskinfo* info_)
 {
@@ -105,6 +236,33 @@ void kickstart(taskinfo* info_, const std::exception_ptr& e_)
   if (aux)
   {
     aux->task_run(new task_t(std::bind(info_->m_eh, e_)));
+  }
+}
+
+taskinfo::taskinfo(const std::weak_ptr<runner>& r)
+  : m_runner(r)
+  , m_next(nullptr)
+  , m_prev(nullptr)
+  , m_is_on_exception(false)
+{ /* noop */ }
+
+taskinfo::taskinfo(entrails::task_t* t, const std::weak_ptr<runner>& r)
+  : m_runner(r)
+  , m_next(nullptr)
+  , m_prev(nullptr)
+  , m_is_on_exception(false)
+{
+  m_callable.task(t);
+}
+
+taskinfo::~taskinfo()
+{
+  if (m_callable)
+  {
+    if (m_deleter)
+      m_deleter();
+    else
+      delete m_callable.task();
   }
 }
 
@@ -128,59 +286,45 @@ void executor(void* ctx)
 runner::runner(dispatch_queue_attr_t queue_type)
     : named("si.digiverse.cool.runner")
     , m_active(true)
-    , m_data(std::make_shared<entrails::queue>(
-        ::dispatch_queue_create(name().c_str(), queue_type)
-      , false))
+    , m_data(std::make_shared<entrails::queue>(name().c_str()))
 { /* noop */ }
 #else
 runner::runner()
     : named("si.digiverse.cool.runner")
     , m_active(true)
-    , m_data(
-          std::make_shared<entrails::queue>(::dispatch_queue_create(name().c_str(), NULL)
-        , false))
+    , m_data(std::make_shared<entrails::queue>(name().c_str()))
 { /* noop */ }
 #endif
 
 runner::runner(const std::string& name, dispatch_queue_priority_t priority)
     : named(name)
     , m_active(true)
-    , m_data(std::make_shared<entrails::queue>(
-        ::dispatch_get_global_queue(priority, 0)
-      , true))
+    , m_data(std::make_shared<entrails::queue>(name.c_str()))
 { /* noop */ }
 
 runner::~runner()
 {
-  if (!m_data->m_is_system)
-    start();
+  start();
 }
 
 void runner::stop()
 {
-  if (!m_data->m_is_system)
-  {
-    bool expected = false;
-    if (m_data->m_suspended.compare_exchange_strong(expected, true))
-      ::dispatch_suspend(m_data->m_queue);
-  }
+  m_data->stop();
 }
 
 void runner::task_run(entrails::taskinfo* info_)
 {
-  ::dispatch_async_f(m_data->m_queue, info_, entrails::task_executor);
+  m_data->enqueue(info_);
 }
 
 void runner::task_run(entrails::task_t* task)
 {
-  ::dispatch_async_f(m_data->m_queue, task, entrails::executor);
+// TODO  ::dispatch_async_f(m_data->m_queue, task, entrails::executor);
 }
 
 void runner::start()
 {
-  bool expected = true;
-  if (m_data->m_suspended.compare_exchange_strong(expected, false))
-    ::dispatch_resume(m_data->m_queue);
+  m_data->start();
 }
 
 // --------------- global variables ---------------------------
@@ -247,8 +391,12 @@ const runner& runner::cool_default()
   return *cool_default_ptr();
 }
 
-// --------------- group --------------------------------------
-
+// ---- --------------------------------------------------------------------
+// ----
+// ---- Group
+// ----
+// ---- ---------------------------------------------------------------------
+#if 0
 group::group()
 {
   auto g = ::dispatch_group_create();
@@ -316,5 +464,6 @@ void group::wait(int64_t interval)
 
   throw cool::exception::timeout("Timeout while waiting for tasks to complete");
 }
+#endif
 
 } } } // namespace

@@ -75,18 +75,21 @@ set (OSX false)
 set (LINUX false)
 set (WIN32 false)
 if (${CMAKE_SYSTEM_NAME} MATCHES  "Darwin")
-  message("   Build COOL library on Apple OS/X")
+  message("   Build COOL library on Apple OS/X, will use dispatch queues with target queue")
   set (OSX true)
   set (TARGET APPLE_TARGET)
+  add_definitions(-DHAS_QUEUE_WITH_TARGET=1)
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-  message("   Build COOL library on Linux")
+  message("   Build COOL library on Linux, will use internal sdt::deque to ensure FIFO order")
   set (TARGET LINUX_TARGET)
   set (LINUX true)
+  add_definitions(-DHAS_QUEUE_WITH_TARGET=0)
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-  message("   Build COOL library on Microsoft Windows from ${COOL_HOME}")
+  message("   Build COOL library on Microsoft Windows from ${COOL_HOME}, , will use internal sdt::deque to ensure FIFO order")
   set (TARGET WIN32_TARGET)
   set (WIN32 true)
   set (xdispatch_DIR externals/xdispatch)
+  add_definitions(-DHAS_QUEUE_WITH_TARGET=0)
 else()
   message("*********************** Unknown platform, expect errors")
   error("Told you so")
@@ -211,6 +214,7 @@ set (TESTS
 if( NOT WIN32 )
   set (TESTS ${TESTS}
     reader_writer
+    threads
   )
 endif()
 
@@ -249,7 +253,6 @@ if (COOL_BUILD_TEST)
 #     GOOGLETEST_INCLUDE_DIR     Self explanatory
 #     GOOGLETEST_LIBRARIES       Google Test runtime libraries
 #     GOOGLETEST_LIBRARIES_ALL   Google Test runtime libraries with main()
-
   set (GOOGLETEST_HOME ${CMAKE_CURRENT_BINARY_DIR}/gtest-1.7.0)
   set (GOOGLETEST_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/gtest-1.7.0/include)
 
@@ -260,10 +263,13 @@ if (COOL_BUILD_TEST)
 
   include_directories(${GOOGLETEST_INCLUDE_DIR})
   foreach (test ${TESTS})
-    add_executable (test_${test} ${COOL_HOME}/test/test_${test}.cpp)
-    target_link_libraries(test_${test} ${COOL_LIBS} ${GOOGLETEST_LIBRARIES_ALL})
-    set_target_properties(test_${test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${COOL_TEST_DIR})
+    set( target test_${test} )
+    add_executable (${target} ${COOL_HOME}/test/test_${test}.cpp)
+    target_link_libraries(${target} ${COOL_LIBS} ${GOOGLETEST_LIBRARIES_ALL})
+    set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${COOL_TEST_DIR})
+    set( TEST_TARGETS ${TEST_TERGETS} ${target})
   endforeach()
 
-
+  add_custom_target(Tests)
+  add_dependencies(Tests ${TEST_TARGETS})
 endif()

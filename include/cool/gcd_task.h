@@ -19,8 +19,8 @@
  * IN THE SOFTWARE.
  */
 
-#if !defined(RUNNER_H_HEADER_GUARD)
-#define RUNNER_H_HEADER_GUARD
+#if !defined(GCD_TASK_H_HEADER_GUARD)
+#define GCD_TASK_H_HEADER_GUARD
 
 #include <functional>
 #include <exception>
@@ -28,6 +28,12 @@
 #include <memory>
 #include <type_traits>
 #include <dispatch/dispatch.h>
+
+#if HAS_QUEUE_WITH_TARGET != 1
+#include <atomic>
+#include <deque>
+#include <mutex>
+#endif
 
 #include "entrails/platform.h"
 #include "vow.h"
@@ -47,6 +53,10 @@ namespace async {
 #if !defined(LINUX_TARGET)
   class proc_observer;
 #endif
+namespace entrails {
+  class fd_io;
+  class writer;
+}
 #endif
 }
 
@@ -55,9 +65,6 @@ namespace async {
  *
  */
 namespace task {
-
-class group;
-
 
 using basis::vow;
 using basis::aim;
@@ -236,7 +243,7 @@ class runner : public named
       )
     );
 
-    ::dispatch_async_f(m_data->m_queue, ctx, entrails::executor);
+    m_data->enqueue(ctx);
 
     return a;
   }
@@ -261,8 +268,7 @@ class runner : public named
               , std::forward<Args>(args)...)
     );
 
-    ::dispatch_async_f(m_data->m_queue, ctx, entrails::executor);
-
+    m_data->enqueue(ctx);
     return a;
   }
 #endif
@@ -348,10 +354,19 @@ class runner : public named
 #if !defined(LINUX_TARGET)
   friend class cool::gcd::async::proc_observer;
 #endif
+  friend class cool::gcd::async::entrails::fd_io;
+  friend class cool::gcd::async::entrails::writer;
 #endif
   friend class group;
-  operator const dispatch_queue_t() const { return m_data->m_queue; }
-  operator dispatch_queue_t () { return m_data->m_queue; }
+#if HAS_QUEUE_WITH_TARGET != 1
+  std::shared_ptr<entrails::queue> get_queue_ptr() const { return m_data; }
+#endif
+  const entrails::queue& get_queue() const { return *m_data; }
+  entrails::queue& get_queue() { return *m_data; }
+#if HAS_QUEUE_WITH_TARGET == 1
+  operator const dispatch_queue_t& () const { return m_data->get_dispatch_queue(); }
+  operator dispatch_queue_t& ()             { return m_data->get_dispatch_queue(); }
+#endif
 
   friend void entrails::kickstart(entrails::taskinfo*);
   void task_run(entrails::taskinfo* info_);
@@ -1455,6 +1470,7 @@ class factory
 #endif
 };
 
+#if 0
 /**
  * A class representing a group of asynchronous tasks.
  *
@@ -1650,6 +1666,7 @@ class group
  private:
   dispatch_group_t m_group;
 };
+#endif
 
 } } } // namespace
 
