@@ -70,6 +70,7 @@ queue::queue(const std::string& name)
 #if HAS_QUEUE_WITH_TARGET == 1
   m_queue = dispatch_queue_create_with_target(name.c_str(), NULL, get_global());
 #else
+  m_queue = nullptr;
   m_running = false;
 #endif
 }
@@ -145,7 +146,10 @@ void queue::start()
   {
     bool expected = false;
     if (m_enabled.compare_exchange_strong(expected, true))
-      ::dispatch_resume(m_queue);
+    {
+      auto q = m_queue != nullptr ? m_queue : get_global();
+      ::dispatch_resume(q);
+    }
   }
 }
 
@@ -155,19 +159,35 @@ void queue::stop()
   {
     bool expected = true;
     if (m_enabled.compare_exchange_strong(expected, false))
-      ::dispatch_suspend(m_queue);
+    {
+      auto q = m_queue != nullptr ? m_queue : get_global();
+      ::dispatch_suspend(q);
+    }
   }
 }
 
 #if HAS_QUEUE_WITH_TARGET != 1
+struct wrapper
+{
+  std::weak_ptr<queue> q;
+};
+
 void queue::submit_next()
 {
-  ::dispatch_async_f(get_global(), this, run_next);
+  auto w = new wrapper();
+  w->q = this->m_self;
+  ::dispatch_async_f(get_global(), static_cast<void*>(w), run_next);
 }
 
-void queue::run_next(void *self_)
+void queue::run_next(void* wrapper_)
 {
-  auto me = static_cast<queue*>(self_);
+  auto w = static_cast<wrapper*>(wrapper_);
+  auto me = w->q.lock();
+  delete w;
+
+  if (!me)
+    return;
+
   queue_context task;
   {
     std::unique_lock<std::mutex> l(me->m_mutex);
@@ -287,24 +307,30 @@ runner::runner(dispatch_queue_attr_t queue_type)
     : named("si.digiverse.cool.runner")
     , m_active(true)
     , m_data(std::make_shared<entrails::queue>(name().c_str()))
-{ /* noop */ }
+{
+  m_data->init(m_data);
+}
 #else
 runner::runner()
     : named("si.digiverse.cool.runner")
     , m_active(true)
     , m_data(std::make_shared<entrails::queue>(name().c_str()))
-{ /* noop */ }
+{
+  m_data->init(m_data);
+}
 #endif
 
 runner::runner(const std::string& name, dispatch_queue_priority_t priority)
     : named(name)
     , m_active(true)
     , m_data(std::make_shared<entrails::queue>(name.c_str()))
-{ /* noop */ }
+{
+  m_data->init(m_data);
+}
 
 runner::~runner()
 {
-  start();
+  stop();
 }
 
 void runner::stop()

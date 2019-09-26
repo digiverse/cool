@@ -582,6 +582,7 @@ class queue
 #if HAS_QUEUE_WITH_TARGET != 1
   void enqueue(void(*task)(void *), void* context);
 #endif
+  void init(std::weak_ptr<queue> self_) { m_self = self_; }
   void start();
   void stop();
 
@@ -608,6 +609,7 @@ class queue
   std::mutex                      m_mutex;
   std::deque<queue_context>       m_fifo;
 #endif
+  std::weak_ptr<queue>            m_self;
 };
 
 #if 0

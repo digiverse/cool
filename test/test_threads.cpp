@@ -114,8 +114,27 @@ int get_num_threads()
 #endif
 }
 
-//TEST(threads, run)
-int main(int argc, char* argv[])
+
+void test1()
+{
+#if HAS_QUEUE_WITH_TARGET != 1
+  {
+    auto runner = std::make_shared<cool::gcd::task::runner>();
+    cool::gcd::task::factory::create(runner,
+      []()
+      {
+        sleep(1);
+      }
+    ).run();
+
+    // sleep(3); // comment to crash ;)
+  }
+
+  sleep(5);
+#endif
+}
+
+void test2()
 {
   dispatch();
   while (true)
@@ -132,4 +151,11 @@ int main(int argc, char* argv[])
       break;
   }
   std::cout << "max threads: " << max_threads << std::endl;
+
+}
+//TEST(threads, run)
+int main(int argc, char* argv[])
+{
+  test1();
+  test2();
 }
