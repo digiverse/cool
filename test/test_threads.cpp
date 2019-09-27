@@ -27,13 +27,14 @@
 #include <cmath>
 #include <string>
 #include <unistd.h>
-//#include <gtest/gtest.h>
+#include <gtest/gtest.h>
 #include "cool/gcd_task.h"
+#include "cool/gcd_async.h"
 
 const int NO_QUEUES = 200;
 const int NO_TASKS = 100;
 const int BLOCK_QUEUES = 10;
-const int NUM_SQRTS_PER_SUM = 1000000; //10000000;
+const int NUM_SQRTS_PER_SUM = 1000000;
 const int BLOCK_SECONDS = 90;
 int max_threads = 0;
 
@@ -42,29 +43,31 @@ std::atomic<double> result;
 
 std::mutex m;
 std::condition_variable v;
-int count(NO_QUEUES);
 
-std::atomic<int> total(NO_TASKS * (NO_QUEUES - BLOCK_QUEUES) + BLOCK_QUEUES);
+std::atomic<int> tasks_count(NO_TASKS * (NO_QUEUES - BLOCK_QUEUES) + BLOCK_QUEUES);
+int runners_count(NO_QUEUES);
+
+int num_sqrts_per_sum = NUM_SQRTS_PER_SUM;
 
 void blocking()
 {
   std::this_thread::sleep_for(std::chrono::seconds(BLOCK_SECONDS));
-  --total;
+  --tasks_count;
 }
 
 void long_running()
 {
   double sum = 0;
-  for (int i = 0; i < NUM_SQRTS_PER_SUM; ++i)
+  for (int i = 0; i < num_sqrts_per_sum; ++i)
     sum += std::sqrt(i);
   result = sum;
-  --total;
+  --tasks_count;
 }
 
 void send_complete()
 {
   std::unique_lock<std::mutex> l(m);
-  --count;
+  --runners_count;
   v.notify_one();
 }
 
@@ -113,49 +116,97 @@ int get_num_threads()
   return 999999;
 #endif
 }
-
-
-void test1()
+#if 1
+TEST(threads, max_threads)
 {
-#if HAS_QUEUE_WITH_TARGET != 1
-  {
-    auto runner = std::make_shared<cool::gcd::task::runner>();
-    cool::gcd::task::factory::create(runner,
-      []()
-      {
-        sleep(1);
-      }
-    ).run();
+  num_sqrts_per_sum = NUM_SQRTS_PER_SUM;
+  runners_count = NO_QUEUES;
+  tasks_count = NO_TASKS * (NO_QUEUES - BLOCK_QUEUES) + BLOCK_QUEUES;
 
-    // sleep(3); // comment to crash ;)
-  }
-
-  sleep(5);
-#endif
-}
-
-void test2()
-{
   dispatch();
   while (true)
   {
     std::unique_lock<std::mutex> l(m);
-    v.wait_for(l, std::chrono::seconds(BLOCK_SECONDS/6), []() { return count == 0; });
-    std::cout << "wait on " << count << " [" << total << "]" << std::endl;
+    v.wait_for(l, std::chrono::seconds(BLOCK_SECONDS/6), []() { return runners_count == 0; });
+    std::cout << "waiting on " << runners_count << " runners, remaining tasks " << tasks_count << "]" << std::endl;
     auto cnt = get_num_threads();
     std::cout << "Num threads: " << cnt << std::endl;
     if (cnt > max_threads)
       max_threads = cnt;
-//    ASSERT_LT(cnt, NO_QUEUES/4);
-    if (count == 0)
+    EXPECT_LT(cnt, NO_QUEUES/4);
+    if (runners_count == 0)
       break;
   }
-  std::cout << "max threads: " << max_threads << std::endl;
-
+  std::cout << "Max threads: " << max_threads << ", test limit: << " << NO_QUEUES/4 << std::endl;
 }
-//TEST(threads, run)
-int main(int argc, char* argv[])
+#endif
+
+TEST(threads, runner_race)
 {
-  test1();
-  test2();
+  runners_count = NO_QUEUES;
+  num_sqrts_per_sum = 100;
+
+  for (int i = 0; i < NO_QUEUES; ++i)
+    queues[i] = std::make_shared<cool::gcd::task::runner>();
+
+  for (int i = 0; i < NO_TASKS; ++i)
+    for (int j = 0; j < NO_QUEUES; ++j)
+      cool::gcd::task::factory::create(queues[j], long_running).run();
+
+//  sleep(1);
+  for (int i = 0; i < NO_QUEUES; ++i)
+    queues[i].reset();
+}
+
+TEST(threads, timer)
+{
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool done = false;
+  cool::gcd::task::runner runner;
+  cool::gcd::async::timer timer(
+      [&mutex, &cv, &done](unsigned long count)
+      {
+        std::unique_lock<std::mutex> l(mutex);
+        done = true;
+        cv.notify_one();
+      }
+    , runner
+    , std::chrono::milliseconds(100)
+  );
+
+  auto start = std::chrono::steady_clock::now();
+  {
+    std::unique_lock<std::mutex> l(mutex);
+
+    timer.start();
+
+    cv.wait_for(l, std::chrono::milliseconds(1000), [&done]() { return done; });
+  }
+
+  auto interval = std::chrono::steady_clock::now() - start;
+  EXPECT_EQ(done, true);
+  EXPECT_LT(std::chrono::milliseconds(90), interval);
+  EXPECT_LT(interval, std::chrono::milliseconds(120));
+}
+
+TEST(threads, runner)
+{
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool done = false;
+  cool::gcd::task::runner runner;
+
+  std::unique_lock<std::mutex> l(mutex);
+  auto lambda = [&mutex, &cv, &done]()
+      {
+        std::unique_lock<std::mutex> l(mutex);
+        done = true;
+        cv.notify_one();
+      };
+  runner.run(lambda);
+
+  cv.wait_for(l, std::chrono::milliseconds(1000), [&done]() { return done; });
+
+  EXPECT_EQ(done, true);
 }
